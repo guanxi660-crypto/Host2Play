@@ -7,7 +7,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
   contents: write
 
 # 防止多个定时任务同时运行导致 git push 冲突
@@ -167,15 +166,19 @@ jobs:
           mkdir -p output/screenshots
 
       # =========================================================
-      # 执行脚本
+      # 执行脚本（失败自动重试 3 次）
       # =========================================================
       - name: 执行续订
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 110
+          max_attempts: 3
+          retry_on: error
+          command: python main.py
         env:
           PYTHONUNBUFFERED: 1
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          python main.py
 
       # =========================================================
       # 上传截图
@@ -221,26 +224,6 @@ jobs:
           git pull --rebase origin main || true
 
           git push origin HEAD:main
-
-      # =========================================================
-      # 自动重跑（失败时）
-      # =========================================================
-      - name: 自动重跑 Workflow
-        if: failure() && github.run_attempt < 3
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            console.log(`当前运行次数: ${context.runAttempt}`);
-
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: context.workflow,
-              ref: context.ref
-            });
-
-            console.log('已触发新的 Workflow');
 
       # =========================================================
       # 清理历史运行记录

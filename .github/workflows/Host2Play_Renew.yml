@@ -4,7 +4,13 @@ on:
   schedule:
     - cron: '0 0,11,22 * * *'
     - cron: '30 5,16 * * *'
+
   workflow_dispatch:
+    inputs:
+      retry:
+        description: "Retry Count"
+        required: false
+        default: "0"
 
 permissions:
   contents: write
@@ -15,13 +21,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
   run-renew:
     name: 执行脚本
     runs-on: ubuntu-latest
-
     timeout-minutes: 120
 
     steps:
+
       # =========================================================
       # Checkout
       # =========================================================
@@ -36,7 +43,7 @@ jobs:
       - name: 配置 Python 环境
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       # =========================================================
       # 系统依赖
@@ -166,15 +173,10 @@ jobs:
           mkdir -p output/screenshots
 
       # =========================================================
-      # 执行脚本（失败自动重试 3 次）
+      # 执行脚本
       # =========================================================
       - name: 执行续订
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 110
-          max_attempts: 3
-          retry_on: error
-          command: python main.py
+        run: python main.py
         env:
           PYTHONUNBUFFERED: 1
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
@@ -220,9 +222,7 @@ jobs:
 
           git commit -m "⏱️ 更新时间文件: $(date +'%Y-%m-%d %H:%M:%S')" || true
 
-          # 防止 schedule 并发导致 push 冲突
           git pull --rebase origin main || true
-
           git push origin HEAD:main
 
       # =========================================================
@@ -237,3 +237,40 @@ jobs:
           delete_workflow_pattern: ${{ github.workflow }}
           retain_days: 0
           keep_minimum_runs: 5
+
+  rerun-workflow:
+    name: 自动重启工作流
+    needs: run-renew
+    if: ${{ always() && needs.run-renew.result == 'failure' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 重新触发自己
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+          script: |
+            const retry =
+              Number('${{ github.event.inputs.retry || 0 }}');
+
+            console.log(`当前重试次数: ${retry}`);
+
+            if (retry >= 3) {
+              console.log("达到最大重试次数");
+              return;
+            }
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'Host2Play_Renew.yml',
+              ref: context.ref.replace('refs/heads/', ''),
+              inputs: {
+                retry: String(retry + 1)
+              }
+            });
+
+            console.log(
+              `已触发新的 Workflow，重试次数 ${retry + 1}`
+            );

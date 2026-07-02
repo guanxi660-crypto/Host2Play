@@ -1,172 +1,73 @@
 name: Host2Play 续期
 
 on:
+  schedule:
+    - cron: '10 */4 * * *'    # 触发点: 00:00, 11:00, 22:00
+          # 触发点: 05:30, 16:30
   workflow_dispatch:
-    inputs:
-      retry:
-        description: "Retry Count"
-        required: false
-        default: "0"
 
 permissions:
-  contents: write
-
-concurrency:
-  group: host2play-renew
-  cancel-in-progress: false
+  actions: write
+  contents: read
 
 jobs:
   run-renew:
     name: 执行脚本
     runs-on: ubuntu-latest
-    timeout-minutes: 120
 
     steps:
       - name: 拉取仓库
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: 配置 Python 环境
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
       - name: 安装系统依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            xvfb \
-            ffmpeg \
-            unzip \
-            curl \
-            wget \
-            jq \
-            ca-certificates \
-            fonts-liberation \
-            libasound2t64 \
-            libatk-bridge2.0-0t64 \
-            libatk1.0-0t64 \
-            libc6 \
-            libcairo2 \
-            libcups2t64 \
-            libdbus-1-3 \
-            libexpat1 \
-            libfontconfig1 \
-            libgbm1 \
-            libgcc-s1 \
-            libglib2.0-0t64 \
-            libgtk-3-0t64 \
-            libnspr4 \
-            libnss3 \
-            libpango-1.0-0 \
-            libpangocairo-1.0-0 \
-            libstdc++6 \
-            libx11-6 \
-            libx11-xcb1 \
-            libxcb1 \
-            libxcomposite1 \
-            libxcursor1 \
-            libxdamage1 \
-            libxext6 \
-            libxfixes3 \
-            libxi6 \
-            libxrandr2 \
-            libxrender1 \
-            libxss1 \
-            libxtst6 \
-            xdg-utils
-
-      - name: 安装 Google Chrome
-        run: |
-          wget -q -O /tmp/google-chrome.deb \
-            https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo dpkg -i /tmp/google-chrome.deb || sudo apt-get install -fy
-          google-chrome --version
+          sudo apt-get install -y xvfb ffmpeg unzip curl
+          wget -q -O /tmp/google-chrome-stable_current_amd64.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i /tmp/google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
 
       - name: 安装 Python 依赖
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install \
-            DrissionPage==4.1.0.18 \
-            DataRecorder==3.6.2 \
-            DownloadKit \
-            requests \
-            lxml \
-            cssselect \
-            websocket-client \
-            psutil \
-            xvfbwrapper \
-            SpeechRecognition \
-            pydub
+          python -m pip install --upgrade pip
+          pip install DrissionPage xvfbwrapper requests SpeechRecognition pydub
 
-      # =========================================================
-      # GOST 代理转发（替代 WARP）
-      # =========================================================
-      - name: 启动 GOST 代理转发
-        env:
-          GOST_PROXY: ${{ secrets.US_PROXY }}
+      - name: 启用 WARP 网络
+        uses: fscarmen/warp-on-actions@v1.3
+        with:
+          stack: dual
+          mode: client
+
+      - name: 修复 DNS
         run: |
-          # 下载 GOST
-          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | jq -r .tag_name | tr -d 'v')
-          echo "📦 GOST 版本: $VERSION"
-          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
-          tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
-          chmod +x gost
+          echo "[INFO] 停用 systemd-resolved，设置公共 DNS..."
+          sudo systemctl stop systemd-resolved 2>/dev/null || true
+          sudo systemctl disable systemd-resolved 2>/dev/null || true
 
-          # 后台启动（增加 -logtostderr -v=2 输出详细日志）
-          nohup ./gost -L http://:8080 -F "$GOST_PROXY" -logtostderr -v=2 > gost.log 2>&1 &
+          sudo rm -f /etc/resolv.conf
+          echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf
 
-          # 等待端口就绪
-          for i in {1..10}; do
-            if nc -z 127.0.0.1 8080; then
-              echo "✅ GOST 已监听 8080"
-              break
-            fi
-            sleep 1
-          done
+          sleep 2
 
-          # 测试 GOST 本地代理连通性（获取公网 IP，仅用于验证）
-          echo "测试代理连通性..."
-          curl -s -x http://127.0.0.1:8080 https://api.ipify.org | sed 's/\([0-9]*\.[0-9]*\.\)[0-9]*\.[0-9]*/\1**.**/g' || echo "⚠️ 代理测试失败"
+          echo "[INFO] DNS 测试:"
+          nslookup host2play.gratis 1.1.1.1 || echo "[WARN] 解析失败"
 
-          # 设置代理环境变量供后续步骤（requests 等库使用）
-          echo "http_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
-          echo "https_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
+          echo ""
+          echo "[INFO] 当前出口 IP:"
+          curl -s --max-time 10 https://api.ipify.org && echo
+          echo "[INFO] WARP Trace:"
+          curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
 
-      # =========================================================
-      # 调试：通过代理访问目标网站（判断是否被屏蔽）
-      # =========================================================
-      - name: 调试代理访问目标
-        run: |
-          echo "=== 通过 GOST 代理访问 host2play.gratis ==="
-          curl -v -x http://127.0.0.1:8080 \
-            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            https://host2play.gratis/server/renew?i=e7d8d7d0-27f3-4b7e-afcc-944d40e44a3d \
-            --max-time 15 -o /dev/null -w "HTTP Status: %{http_code}\n" || true
-
-          echo "=== GOST 日志（最后 30 行） ==="
-          cat gost.log | tail -30 || true
-
-      # =========================================================
-      # 创建输出目录
-      # =========================================================
-      - name: 创建输出目录
-        run: mkdir -p output/screenshots
-
-      # =========================================================
-      # 执行续订脚本
-      # =========================================================
       - name: 执行续订
-        run: python main.py
         env:
-          PYTHONUNBUFFERED: 1
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python main.py
 
-      # =========================================================
-      # 上传截图
-      # =========================================================
       - name: 上传截图
         if: always()
         uses: actions/upload-artifact@v4
@@ -176,32 +77,6 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      # =========================================================
-      # 更新时间文件
-      # =========================================================
-      - name: 更新时间文件
-        if: always()
-        run: echo "$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
-
-      - name: Commit time.txt to repo
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add time.txt
-          if git diff --cached --quiet; then
-            echo "无变化，无需提交"
-            exit 0
-          fi
-          git commit -m "⏱️ 更新时间文件: $(date +'%Y-%m-%d %H:%M:%S')" || true
-          git pull --rebase origin main || true
-          git push origin HEAD:main
-
-      # =========================================================
-      # 清理历史运行记录
-      # =========================================================
       - name: 清理历史运行记录
         if: always()
         uses: Mattraks/delete-workflow-runs@v2
@@ -210,32 +85,4 @@ jobs:
           repository: ${{ github.repository }}
           delete_workflow_pattern: ${{ github.workflow }}
           retain_days: 0
-          keep_minimum_runs: 5
-
-  rerun-workflow:
-    name: 自动重启工作流
-    needs: run-renew
-    if: ${{ always() && needs.run-renew.result == 'failure' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: 重新触发自己
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const retry = Number('${{ github.event.inputs.retry || 0 }}');
-            console.log(`当前重试次数: ${retry}`);
-            if (retry >= 3) {
-              console.log("达到最大重试次数");
-              return;
-            }
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'Host2Play_Renew.yml',
-              ref: context.ref.replace('refs/heads/', ''),
-              inputs: {
-                retry: String(retry + 1)
-              }
-            });
-            console.log(`已触发新的 Workflow，重试次数 ${retry + 1}`);
+          keep_minimum_runs: 2

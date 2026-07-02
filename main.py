@@ -5,7 +5,7 @@ import random
 import html
 import requests
 import tempfile
-# 移除 subprocess（不再需要 WARP）
+import subprocess  # 保留但不再用于 WARP，仅用于可能的系统命令
 from datetime import datetime, timezone, timedelta
 from xvfbwrapper import Xvfb
 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -21,7 +21,7 @@ except ImportError:
 # ==============================================================================
 RENEW_URLS = [
     "https://host2play.gratis/server/renew?i=e7d8d7d0-27f3-4b7e-afcc-944d40e44a3d",
-    # 添加更多链接
+    # 可添加更多 URL
 ]
 
 MAX_CAPTCHA = 3
@@ -131,7 +131,7 @@ def capture_page_screenshot(page, file_name):
         return None
 
 # ==============================================================================
-# reCAPTCHA 辅助函数
+# reCAPTCHA 辅助函数（保持原样）
 # ==============================================================================
 def find_recaptcha_frame(page, kind):
     try:
@@ -433,7 +433,7 @@ def solve_recaptcha(page):
     raise RuntimeError("验证码达到最大尝试次数")
 
 # ==============================================================================
-# 单个 URL 续期流程（去掉 IP 预检，直接尝试 + 封锁换 IP）
+# 续期核心函数（移除 WARP 重连，添加代理配置和重试等待）
 # ==============================================================================
 def renew_single_url(url):
     success = False
@@ -467,9 +467,9 @@ def renew_single_url(url):
                 co.set_argument('--window-size=1280,720')
                 co.set_argument('--log-level=3')
                 co.set_argument('--silent')
-                # -------- 新增：通过 GOST 代理 ----------
+                # ========= 关键：设置 GOST 代理 =========
                 co.set_argument('--proxy-server=http://127.0.0.1:8080')
-                # ----------------------------------------
+                # ========================================
                 user_data_dir = tempfile.mkdtemp()
                 co.set_user_data_path(user_data_dir)
                 co.auto_port()
@@ -497,7 +497,7 @@ def renew_single_url(url):
                 old_expire = get_expire_time(page)
                 log(f"服务器: {server_name}, 到期时间: {old_expire}")
 
-                # 清理遮挡广告
+                # 清理广告遮挡
                 page.run_js("""
                     const cssSelectors = ['ins.adsbygoogle', 'iframe[src*="ads"]', '.modal-backdrop'];
                     cssSelectors.forEach(sel => {
@@ -510,7 +510,7 @@ def renew_single_url(url):
                     consent_btn.click()
                     time.sleep(3)
 
-                # 积累鼠标轨迹和滚动
+                # 模拟人类行为
                 for _ in range(3):
                     scroll_y = random.randint(200, 600)
                     page.scroll.down(scroll_y)
@@ -543,7 +543,7 @@ def renew_single_url(url):
                         renew_btn2.click(by_js=True)
                 time.sleep(random.uniform(7, 10))
 
-                # reCAPTCHA 破解
+                # reCAPTCHA 处理
                 anchor_frame = find_recaptcha_frame(page, "anchor")
                 if not anchor_frame:
                     log("未检测到 reCAPTCHA，检查是否已直接成功")
@@ -557,16 +557,16 @@ def renew_single_url(url):
                 log("启动 reCAPTCHA 音频破解...")
                 try:
                     solved = solve_recaptcha(page)
-                except CaptchaBlocked:
-                    log("IP 被封锁，等待后重试", "WARN")
+                except CaptchaBlocked as e:
+                    log(f"IP 被封锁: {e}", "WARN")
                     failure_reason = "IP 被 reCAPTCHA 封锁"
                     try:
                         page.quit()
                     except:
                         pass
                     page = None
-                    # 不再调用 restart_warp，而是等待一段时间后继续
-                    time.sleep(random.uniform(5, 10))
+                    # 等待一段时间后重试（不切换 IP，因为代理固定）
+                    time.sleep(random.uniform(10, 20))
                     continue
                 except Exception as e:
                     log(f"reCAPTCHA 异常: {e}", "ERROR")
@@ -609,7 +609,6 @@ def renew_single_url(url):
                         except:
                             pass
                         page = None
-                    # 同样移除 WARP 重连，改为等待后重试
                     time.sleep(random.uniform(5, 10))
                     continue
                 break

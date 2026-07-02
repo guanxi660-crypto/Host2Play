@@ -3,6 +3,16 @@ name: Host2Play 续期
 on:
 
   workflow_dispatch:
+  push:
+    branches:
+      - main
+
+  # 添加以下定时触发配置
+  schedule:
+    # 使用 cron 表达式：0 0 */2 * *
+    # 分 时 日 月 周
+    # 这表示每两天（*/2）的午夜 0 点（0 0）执行一次
+    - cron: '0 0 */2 * *'
 
 permissions:
   actions: write

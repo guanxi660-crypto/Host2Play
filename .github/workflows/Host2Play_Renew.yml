@@ -1,8 +1,6 @@
 name: Host2Play 续期
 
 on:
-
-
   workflow_dispatch:
     inputs:
       retry:
@@ -19,14 +17,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-
   run-renew:
     name: 执行脚本
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
-
       # =========================================================
       # Checkout
       # =========================================================
@@ -49,7 +45,6 @@ jobs:
       - name: 安装系统依赖
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             xvfb \
             ffmpeg \
@@ -99,9 +94,7 @@ jobs:
         run: |
           wget -q -O /tmp/google-chrome.deb \
             https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-
           sudo dpkg -i /tmp/google-chrome.deb || sudo apt-get install -fy
-
           google-chrome --version
 
       # =========================================================
@@ -110,7 +103,6 @@ jobs:
       - name: 安装 Python 依赖
         run: |
           python -m pip install --upgrade pip setuptools wheel
-
           pip install \
             DrissionPage==4.1.0.18 \
             DataRecorder==3.6.2 \
@@ -125,43 +117,30 @@ jobs:
             pydub
 
       # =========================================================
-      # 启用 WARP
+      # 启动 GOST 代理转发（替代 WARP）
       # =========================================================
-      - name: 启用 WARP 网络
-        uses: fscarmen/warp-on-actions@v1.3
-        with:
-          stack: dual
-          mode: client
-
-      # =========================================================
-      # 修复 DNS
-      # =========================================================
-      - name: 修复 DNS
+      - name: 启动 GOST 代理转发
+        env:
+          GOST_PROXY: ${{ secrets.US_PROXY }}
         run: |
-          echo "[INFO] 停用 systemd-resolved..."
+          # 下载并安装 GOST
+          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          echo "📦 GOST 版本: $VERSION"
+          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
+          tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
+          chmod +x gost
 
-          sudo systemctl stop systemd-resolved 2>/dev/null || true
-          sudo systemctl disable systemd-resolved 2>/dev/null || true
-
-          sudo rm -f /etc/resolv.conf
-
-          echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1" \
-            | sudo tee /etc/resolv.conf
-
+          # 后台启动 GOST（监听本地 HTTP 代理，转发至上游）
+          nohup ./gost -L http://:8080 -F "$GOST_PROXY" > gost.log 2>&1 &
           sleep 3
 
-          echo ""
-          echo "[INFO] DNS 测试:"
-          nslookup host2play.gratis 1.1.1.1 || true
+          # 测试代理连通性（IP 地址模糊化）
+          echo "✅ GOST 已启动，测试连通性..."
+          curl -s -x http://127.0.0.1:8080 https://api.ipify.org | sed 's/\([0-9]*\.[0-9]*\.\)[0-9]*\.[0-9]*/\1**.**/g'
 
-          echo ""
-          echo "[INFO] 当前出口 IP:"
-          curl -s --max-time 15 https://api.ipify.org && echo
-
-          echo ""
-          echo "[INFO] Cloudflare Trace:"
-          curl -s --max-time 15 https://www.cloudflare.com/cdn-cgi/trace \
-            | grep -E 'ip=|warp=|loc=' || true
+          # 为后续所有步骤设置代理环境变量（通过 GITHUB_ENV）
+          echo "http_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
+          echo "https_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
 
       # =========================================================
       # 创建目录
@@ -210,16 +189,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           git add time.txt
-
           if git diff --cached --quiet; then
             echo "无变化，无需提交"
             exit 0
           fi
-
           git commit -m "⏱️ 更新时间文件: $(date +'%Y-%m-%d %H:%M:%S')" || true
-
           git pull --rebase origin main || true
           git push origin HEAD:main
 
@@ -241,24 +216,18 @@ jobs:
     needs: run-renew
     if: ${{ always() && needs.run-renew.result == 'failure' }}
     runs-on: ubuntu-latest
-
     steps:
       - name: 重新触发自己
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-
           script: |
-            const retry =
-              Number('${{ github.event.inputs.retry || 0 }}');
-
+            const retry = Number('${{ github.event.inputs.retry || 0 }}');
             console.log(`当前重试次数: ${retry}`);
-
             if (retry >= 3) {
               console.log("达到最大重试次数");
               return;
             }
-
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -268,7 +237,4 @@ jobs:
                 retry: String(retry + 1)
               }
             });
-
-            console.log(
-              `已触发新的 Workflow，重试次数 ${retry + 1}`
-            );
+            console.log(`已触发新的 Workflow，重试次数 ${retry + 1}`);

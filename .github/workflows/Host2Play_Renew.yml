@@ -11,7 +11,6 @@ on:
 permissions:
   contents: write
 
-# 防止多个定时任务同时运行导致 git push 冲突
 concurrency:
   group: host2play-renew
   cancel-in-progress: false
@@ -23,25 +22,16 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      # =========================================================
-      # Checkout
-      # =========================================================
       - name: 拉取仓库
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # =========================================================
-      # Python
-      # =========================================================
       - name: 配置 Python 环境
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # =========================================================
-      # 系统依赖
-      # =========================================================
       - name: 安装系统依赖
         run: |
           sudo apt-get update
@@ -87,9 +77,6 @@ jobs:
             libxtst6 \
             xdg-utils
 
-      # =========================================================
-      # 安装 Chrome
-      # =========================================================
       - name: 安装 Google Chrome
         run: |
           wget -q -O /tmp/google-chrome.deb \
@@ -97,9 +84,6 @@ jobs:
           sudo dpkg -i /tmp/google-chrome.deb || sudo apt-get install -fy
           google-chrome --version
 
-      # =========================================================
-      # Python 依赖
-      # =========================================================
       - name: 安装 Python 依赖
         run: |
           python -m pip install --upgrade pip setuptools wheel
@@ -117,40 +101,61 @@ jobs:
             pydub
 
       # =========================================================
-      # 启动 GOST 代理转发（替代 WARP）
+      # GOST 代理转发（替代 WARP）
       # =========================================================
       - name: 启动 GOST 代理转发
         env:
           GOST_PROXY: ${{ secrets.US_PROXY }}
         run: |
-          # 下载并安装 GOST
-          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          # 下载 GOST
+          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | jq -r .tag_name | tr -d 'v')
           echo "📦 GOST 版本: $VERSION"
           wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
           tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
           chmod +x gost
 
-          # 后台启动 GOST（监听本地 HTTP 代理，转发至上游）
-          nohup ./gost -L http://:8080 -F "$GOST_PROXY" > gost.log 2>&1 &
-          sleep 3
+          # 后台启动（增加 -logtostderr -v=2 输出详细日志）
+          nohup ./gost -L http://:8080 -F "$GOST_PROXY" -logtostderr -v=2 > gost.log 2>&1 &
 
-          # 测试代理连通性（IP 地址模糊化）
-          echo "✅ GOST 已启动，测试连通性..."
-          curl -s -x http://127.0.0.1:8080 https://api.ipify.org | sed 's/\([0-9]*\.[0-9]*\.\)[0-9]*\.[0-9]*/\1**.**/g'
+          # 等待端口就绪
+          for i in {1..10}; do
+            if nc -z 127.0.0.1 8080; then
+              echo "✅ GOST 已监听 8080"
+              break
+            fi
+            sleep 1
+          done
 
-          # 为后续所有步骤设置代理环境变量（通过 GITHUB_ENV）
+          # 测试 GOST 本地代理连通性（获取公网 IP，仅用于验证）
+          echo "测试代理连通性..."
+          curl -s -x http://127.0.0.1:8080 https://api.ipify.org | sed 's/\([0-9]*\.[0-9]*\.\)[0-9]*\.[0-9]*/\1**.**/g' || echo "⚠️ 代理测试失败"
+
+          # 设置代理环境变量供后续步骤（requests 等库使用）
           echo "http_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
           echo "https_proxy=http://127.0.0.1:8080" >> $GITHUB_ENV
 
       # =========================================================
-      # 创建目录
+      # 调试：通过代理访问目标网站（判断是否被屏蔽）
       # =========================================================
-      - name: 创建输出目录
+      - name: 调试代理访问目标
         run: |
-          mkdir -p output/screenshots
+          echo "=== 通过 GOST 代理访问 host2play.gratis ==="
+          curl -v -x http://127.0.0.1:8080 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            https://host2play.gratis/server/renew?i=e7d8d7d0-27f3-4b7e-afcc-944d40e44a3d \
+            --max-time 15 -o /dev/null -w "HTTP Status: %{http_code}\n" || true
+
+          echo "=== GOST 日志（最后 30 行） ==="
+          cat gost.log | tail -30 || true
 
       # =========================================================
-      # 执行脚本
+      # 创建输出目录
+      # =========================================================
+      - name: 创建输出目录
+        run: mkdir -p output/screenshots
+
+      # =========================================================
+      # 执行续订脚本
       # =========================================================
       - name: 执行续订
         run: python main.py
@@ -176,12 +181,8 @@ jobs:
       # =========================================================
       - name: 更新时间文件
         if: always()
-        run: |
-          echo "$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
+        run: echo "$(date +'%Y-%m-%d %H:%M:%S')" > time.txt
 
-      # =========================================================
-      # Push 更新时间
-      # =========================================================
       - name: Commit time.txt to repo
         if: always()
         env:

@@ -5,7 +5,7 @@ import random
 import html
 import requests
 import tempfile
-import subprocess
+# 移除 subprocess（不再需要 WARP）
 from datetime import datetime, timezone, timedelta
 from xvfbwrapper import Xvfb
 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -83,7 +83,6 @@ def get_expire_time(page):
             return ele.text.strip()
     except Exception:
         pass
-    # 回退：源版的方式
     selectors = ['text:Expires in:', 'text:Deletes on:']
     for selector in selectors:
         try:
@@ -130,38 +129,6 @@ def capture_page_screenshot(page, file_name):
     except Exception as e:
         log(f"截图失败: {e}", "WARN")
         return None
-
-# ==============================================================================
-# WARP 重连
-# ==============================================================================
-def restart_warp():
-    log("正在重启 WARP 以更换 IP...")
-    try:
-        old_ip = requests.get("https://api.ipify.org", timeout=10).text
-        log(f"当前 IP: {old_ip}")
-    except Exception:
-        old_ip = "未知"
-    try:
-        subprocess.run(["sudo", "warp-cli", "--accept-tos", "disconnect"],
-                      check=False, timeout=30, capture_output=True)
-        time.sleep(3)
-        try:
-            subprocess.run(["sudo", "warp-cli", "--accept-tos", "registration", "delete"],
-                          check=True, timeout=30, capture_output=True)
-        except subprocess.CalledProcessError:
-            log("删除注册失败（可能未注册）", "WARN")
-        subprocess.run(["sudo", "warp-cli", "--accept-tos", "registration", "new"],
-                      check=True, timeout=30, capture_output=True)
-        time.sleep(3)
-        subprocess.run(["sudo", "warp-cli", "--accept-tos", "connect"],
-                      check=True, timeout=30, capture_output=True)
-        time.sleep(10)
-        new_ip = requests.get("https://api.ipify.org", timeout=10).text
-        log(f"WARP 重连成功，新 IP: {new_ip}")
-        return True
-    except Exception as e:
-        log(f"WARP 重连失败: {e}", "ERROR")
-        return False
 
 # ==============================================================================
 # reCAPTCHA 辅助函数
@@ -500,7 +467,9 @@ def renew_single_url(url):
                 co.set_argument('--window-size=1280,720')
                 co.set_argument('--log-level=3')
                 co.set_argument('--silent')
-                # 关键：每次用独立的用户数据目录，避免残留 cookie/指纹
+                # -------- 新增：通过 GOST 代理 ----------
+                co.set_argument('--proxy-server=http://127.0.0.1:8080')
+                # ----------------------------------------
                 user_data_dir = tempfile.mkdtemp()
                 co.set_user_data_path(user_data_dir)
                 co.auto_port()
@@ -541,7 +510,7 @@ def renew_single_url(url):
                     consent_btn.click()
                     time.sleep(3)
 
-                # 关键：积累真实的鼠标轨迹和滚动数据（源版有，新版删了）
+                # 积累鼠标轨迹和滚动
                 for _ in range(3):
                     scroll_y = random.randint(200, 600)
                     page.scroll.down(scroll_y)
@@ -589,17 +558,16 @@ def renew_single_url(url):
                 try:
                     solved = solve_recaptcha(page)
                 except CaptchaBlocked:
-                    log("IP 被封锁，换 IP 后重试", "WARN")
+                    log("IP 被封锁，等待后重试", "WARN")
                     failure_reason = "IP 被 reCAPTCHA 封锁"
                     try:
                         page.quit()
                     except:
                         pass
                     page = None
-                    if attempt < MAX_RENEW_RETRIES_PER_URL:
-                        restart_warp()
-                        continue
-                    break
+                    # 不再调用 restart_warp，而是等待一段时间后继续
+                    time.sleep(random.uniform(5, 10))
+                    continue
                 except Exception as e:
                     log(f"reCAPTCHA 异常: {e}", "ERROR")
                     failure_reason = f"reCAPTCHA 异常: {e}"
@@ -641,7 +609,8 @@ def renew_single_url(url):
                         except:
                             pass
                         page = None
-                    restart_warp()
+                    # 同样移除 WARP 重连，改为等待后重试
+                    time.sleep(random.uniform(5, 10))
                     continue
                 break
             finally:
